@@ -1,0 +1,87 @@
+name: Refresh SCImago and deploy Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 1 * *'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/update-scimago.yml'
+      - 'scripts/update_scimago.R'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ifsfd-scimago-pages
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout IFSFD
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout public SCImago mirror
+        uses: actions/checkout@v4
+        with:
+          repository: ikashnitsky/sjrdata
+          ref: master
+          path: _sjrdata
+          fetch-depth: 1
+          sparse-checkout: |
+            data/sjr_journals.rda
+          sparse-checkout-cone-mode: false
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+
+      - name: Install JSON support
+        shell: bash
+        run: Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
+
+      - name: Refresh SCImago yearly datasets
+        run: Rscript scripts/update_scimago.R
+
+      - name: Commit refreshed SCImago data
+        shell: bash
+        run: |
+          if [[ -n "$(git status --porcelain -- public/data/scimago)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add public/data/scimago
+            git commit -m "chore: refresh SCImago data"
+            git push origin HEAD:main
+          else
+            echo "SCImago data already up to date."
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build site
+        run: npm run build
+
+      - name: Deploy to gh-pages
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          npx --yes gh-pages -d dist --no-history -u "github-actions-bot <support+actions@github.com>"
